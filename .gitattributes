@@ -1,0 +1,10 @@
+﻿# Force shell scripts to LF line endings so they work in Linux containers.
+*.sh text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+.env.example text eol=lf
+*.yml text eol=lf
+
+# Treat JSON/Markdown as text (CRLF normalization handled by editors).
+*.json text
+*.md text

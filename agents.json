@@ -1,0 +1,19 @@
+[
+  {
+    "id": "demo-agent",
+    "name": "Demo Assistant",
+    "description": "A small example agent that demonstrates isolated workspaces, tools, and persistent conversations.",
+    "defaultProvider": "openai",
+    "defaultModel": "gpt-4o",
+    "defaultThinkingLevel": "medium",
+    "allowedTools": [
+      "read",
+      "grep",
+      "find",
+      "ls"
+    ],
+    "workspacePath": "demo-agent",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+  }
+]
