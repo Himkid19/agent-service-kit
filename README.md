@@ -1,5 +1,7 @@
 # Agent Service Kit
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Agent Service Kit is a production-ready, self-hosted framework for quickly
 deploying configurable LLM agent services. It turns an OpenAI-compatible model
 endpoint into a multi-user service with isolated workspaces, persistent
