@@ -51,6 +51,8 @@ migrations/            MySQL schema
   must return `Session not found`.
 - Provider and model resolution order is request/agent selection, then MySQL
   provider configuration, then the `PROVIDER_*` environment fallback.
+- Browser cross-origin access is controlled by `CORS_ORIGIN`; keep the
+  production value as an explicit comma-separated allowlist.
 - Secrets must come from environment variables or a secret manager. Never
   commit `.env`, API keys, database passwords, JWTs, or generated auth state.
 - Do not add private customer data, raw business Q&A exports, internal
@@ -85,6 +87,19 @@ Tests refuse to truncate databases that do not contain `test` in their name.
 
 - Run `npm run build` after TypeScript changes.
 - Run `npm test` after code, schema, route, or behavior changes.
+- Run the quick-start acceptance flow after deployment, Docker, provider, or
+  environment-variable changes:
+  1. `docker compose up --build -d`
+  2. `GET /api/health` returns `ok`
+  3. `GET /api/health/ready` returns ready with `db.reachable=true`
+  4. `POST /api/auth/login` succeeds
+  5. `POST /api/agents` creates an agent
+  6. `POST /api/chat/:agentId` returns a reply
+  7. `POST /api/chat/:agentId/stream` emits `text_delta` and `done`
+  8. `GET /api/chat/sessions` still returns the session after
+     `docker compose restart app`
+- A mock OpenAI-compatible provider is sufficient for deployment verification.
+  Do not require a paid production model key merely to prove the service works.
 - For API changes, update:
   - `docs/api.md`
   - `src/openapi.ts`
@@ -95,6 +110,32 @@ Tests refuse to truncate databases that do not contain `test` in their name.
   - `.env.example`
 - For container changes, verify both the image build and `/api/health/ready`.
 - Never mark a change complete without relevant verification output.
+
+## Deployment and Harness Notes
+
+- The default Docker image installs only the Node runtime and `su-exec`. Python
+  is optional because downloading the full Python/pip toolchain made quick
+  starts slow and fragile on restricted networks. Set
+  `INSTALL_PYTHON_RUNTIME=true` when an agent workspace runs Python skills.
+- Docker image and registry failures should be fixed with deployment inputs,
+  not by committing internal registry hostnames:
+  - `NODE_IMAGE`
+  - `NPM_REGISTRY`
+  - `MYSQL_IMAGE`
+- A provider running on the host is not reachable as `localhost` from inside
+  the application container. Use `host.docker.internal` on Docker Desktop or
+  the appropriate host gateway/network address in other environments.
+- Validate browser integration with a preflight request to `/api/agents` and a
+  GET request carrying the frontend `Origin` header.
+- The frontend contract is:
+  - login with `POST /api/auth/login`;
+  - send `Authorization: Bearer <jwt>` on protected requests;
+  - create/list agents through `/api/agents`;
+  - use `POST /api/chat/:agentId` for normal responses;
+  - use `POST /api/chat/:agentId/stream` for SSE;
+  - preserve `sessionId` from the chat or `done` response for multi-turn
+    context;
+  - check HTTP status before parsing JSON or SSE.
 
 ## Security Boundaries
 

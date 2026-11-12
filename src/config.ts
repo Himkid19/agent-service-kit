@@ -50,6 +50,7 @@ if (!configuredJwtSecret && process.env.NODE_ENV === "production") {
 export const config = {
   port: parseInt(env("PORT", "3001"), 10),
   host: env("HOST", "0.0.0.0"),
+  corsOrigin: env("CORS_ORIGIN", "*"),
   jwtSecret: configuredJwtSecret || randomBytes(32).toString("hex"),
 
   // Initial password for the seeded default admin account.

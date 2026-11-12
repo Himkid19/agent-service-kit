@@ -1,5 +1,6 @@
 ARG NODE_IMAGE=node:24-alpine
 ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG INSTALL_PYTHON_RUNTIME=false
 
 # ─── builder: install dependencies and compile TypeScript ───────────────────
 FROM ${NODE_IMAGE} AS builder
@@ -53,30 +54,33 @@ RUN node /app/baked-workspace-check.cjs
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 
-# Python runtime for agents that invoke Python through the shell tool.
 RUN set -e; \
     apk_ok=0; \
     for i in 1 2 3 4 5; do \
-      if apk update && apk add --no-cache python3 py3-pip su-exec; then apk_ok=1; break; fi; \
+      if apk add --no-cache su-exec; then apk_ok=1; break; fi; \
       echo "[build] apk fetch failed (attempt $i/5), retrying in 10s"; \
       sleep 10; \
     done; \
-    [ "$apk_ok" -eq 1 ]; \
-    python3 -m venv /app/.venv && \
-    rm -rf /root/.cache/pip
+    [ "$apk_ok" -eq 1 ]
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Optional per-workspace Python dependencies.
-RUN set -e; \
-    for ws in /app/workplaces/*/; do \
-      if [ -f "$ws/requirements.txt" ]; then \
-        pip install --no-cache-dir -r "$ws/requirements.txt"; \
-      elif [ -f "$ws/pyproject.toml" ]; then \
-        python3 -c "import tomllib; print('\n'.join(tomllib.load(open('$ws/pyproject.toml','rb')).get('project', {}).get('dependencies', [])))" > /tmp/ws-deps.txt; \
-        if [ -s /tmp/ws-deps.txt ]; then pip install --no-cache-dir -r /tmp/ws-deps.txt; fi; \
-      fi; \
-    done; \
-    rm -f /tmp/ws-deps.txt /root/.cache/pip
+ARG INSTALL_PYTHON_RUNTIME
+# Optional Python runtime and per-workspace dependencies. Disabled by default
+# so the quick-start image stays small and builds on restricted networks.
+RUN if [ "$INSTALL_PYTHON_RUNTIME" = "true" ]; then \
+      set -e; \
+      apk add --no-cache python3 py3-pip; \
+      python3 -m venv /app/.venv; \
+      for ws in /app/workplaces/*/; do \
+        if [ -f "$ws/requirements.txt" ]; then \
+          pip install --no-cache-dir -r "$ws/requirements.txt"; \
+        elif [ -f "$ws/pyproject.toml" ]; then \
+          python3 -c "import tomllib; print('\n'.join(tomllib.load(open('$ws/pyproject.toml','rb')).get('project', {}).get('dependencies', [])))" > /tmp/ws-deps.txt; \
+          if [ -s /tmp/ws-deps.txt ]; then pip install --no-cache-dir -r /tmp/ws-deps.txt; fi; \
+        fi; \
+      done; \
+      rm -f /tmp/ws-deps.txt /root/.cache/pip; \
+    fi
 
 RUN mkdir -p /app/data /app/workplaces /app/.pi \
     && chown -R node:node /app

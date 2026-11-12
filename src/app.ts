@@ -13,6 +13,7 @@ import { db } from "./db.js";
 import { healthService } from "./services/health.service.js";
 import { chatService } from "./services/chat.service.js";
 import { createLogger } from "./logger.js";
+import { config } from "./config.js";
 
 const log = createLogger("http");
 
@@ -22,7 +23,11 @@ const SLOW_REQUEST_MS = 5000;
 export function createApp(): express.Application {
   const app = express();
 
-  app.use(cors());
+  app.use(cors({
+    origin: config.corsOrigin === "*"
+      ? "*"
+      : config.corsOrigin.split(",").map((origin) => origin.trim()).filter(Boolean),
+  }));
   app.use(express.json());
   // JSON body parse error handler — capture the raw body so we can diagnose malformed client payloads.
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {

@@ -66,6 +66,10 @@ Response:
 Tokens expire after 24 hours. Repeated failures lock the same IP + username
 combination and return `423` with `code: "ACCOUNT_LOCKED"` and `retryAfterMs`.
 
+For browser clients, configure `CORS_ORIGIN`. Use a comma-separated allowlist in
+production, such as `https://app.example.com,https://admin.example.com`.
+Development deployments default to `*`.
+
 ## Agents
 
 ### List agents

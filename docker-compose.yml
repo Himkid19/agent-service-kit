@@ -1,6 +1,6 @@
 services:
   mysql:
-    image: mysql:8.4
+    image: ${MYSQL_IMAGE:-mysql:8.4}
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       MYSQL_DATABASE: ${DB_NAME:-agent_service_kit}
@@ -15,7 +15,12 @@ services:
       retries: 20
 
   app:
-    build: .
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        INSTALL_PYTHON_RUNTIME: ${INSTALL_PYTHON_RUNTIME:-false}
     ports:
       - "${PORT:-3001}:3001"
     env_file:

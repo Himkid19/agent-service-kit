@@ -2,218 +2,356 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Agent Service Kit is a production-ready, self-hosted framework for quickly
-deploying configurable LLM agent services. It turns an OpenAI-compatible model
-endpoint into a multi-user service with isolated workspaces, persistent
-conversations, per-agent tools, streaming responses, and operational health
-checks.
+Turn any OpenAI-compatible model endpoint into a deployable, multi-user Agent
+service. Agent Service Kit supplies the missing backend layer around the model:
+accounts, agents, isolated workspaces, conversation history, tool permissions,
+streaming responses, and a frontend-ready HTTP API.
 
-It is designed for teams that have moved past a one-off LLM prototype and need
-a reusable deployment layer: user accounts, several agents with different
-prompts and knowledge, session persistence, tool permissions, concurrency
-control, and an HTTP API that a web frontend or internal service can consume.
+## What Problem It Solves
 
-## Features
+Calling a model API is easy. Turning it into a service that a team or frontend
+can actually use usually requires a lot of repeated infrastructure work.
 
-- Create, update, list, and delete agents with isolated filesystem workspaces
-- Load agent instructions from `agent.md` and reusable skills from `skills/`
-- Keep multiple persistent conversations per user and agent
-- Use OpenAI-compatible providers and switch provider/model per request
-- Stream text, reasoning, and tool events over Server-Sent Events (SSE)
-- Enforce read-only tools by default and block high-confidence unsafe commands
-- Bound in-memory sessions with TTL + LRU and limit concurrent LLM calls
-- Expose liveness, MySQL readiness, memory, session, and concurrency metrics
-- Store users, agents, providers, sessions, messages, usage, and context state in MySQL
+| Without Agent Service Kit | With Agent Service Kit |
+| --- | --- |
+| Every prototype invents its own prompt and model-calling layer | One service manages multiple agents and providers |
+| Users and conversation ownership must be built separately | JWT auth and per-user session isolation are included |
+| Prompt files and private references are mixed into application code | Each agent gets an isolated workspace |
+| Streaming and tool events require custom protocols | A documented SSE contract is ready for frontends |
+| Sessions disappear when the process restarts | Conversations and metadata persist in MySQL |
+| Concurrent model calls can exhaust the service | Queueing, limits, cache bounds, and health metrics are built in |
 
-## Architecture
+The project is not another chat UI. It is the backend that lets you add a UI,
+connect an internal knowledge base, or give domain-specific agents to a team
+without rebuilding the same plumbing every time.
 
-```text
-HTTP client
-    |
-    v
-Express API (/api)
-    |
-    +-- JWT auth and rate limiting
-    +-- Agent service ------> workplaces/<agent-id>/
-    +-- Chat service -------> Pi SDK sessions
-    |                         |
-    |                         +--> OpenAI-compatible provider
-    +-- Session cache ------> MySQL
-    +-- Provider registry --> Pi SDK model registry
-```
+## Typical Uses
 
-Each agent runs against its own workspace. New agents receive read-only file
-tools by default. Operators can add skills, private reference documents, and
-agent-specific instructions without exposing another agent's workspace.
+- Deploy an internal knowledge assistant backed by prompt files and reference documents.
+- Give different teams separate agents for research, support, operations, or data lookup.
+- Add an LLM chat API to an existing web application.
+- Prototype an agent product with authentication, persistence, and streaming from day one.
+- Give Codex, Claude Code, or another coding harness a repeatable deployment target.
+
+## Connect Through Codex or Claude Code
+
+The repository includes [AGENTS.md](AGENTS.md), so a coding harness can inspect
+the repository, configure the service, run validation, and diagnose failures
+without a long setup explanation from the user.
+
+1. Clone or open this repository in Codex, Claude Code, or another harness that
+   reads `AGENTS.md`.
+2. Create `.env` from [.env.example](.env.example).
+3. Fill in the model endpoint, model API key, database password, and
+   `JWT_SECRET`. Do not paste secrets into the prompt.
+4. Give the harness this one-sentence task:
+
+> Read `AGENTS.md` and deploy this repository as my local Agent service: prepare
+> `.env` from `.env.example`, run `docker compose up --build -d`, wait for
+> `/api/health/ready`, create a `support-assistant` agent, verify one JSON and
+> one SSE conversation, and give me the frontend base URL.
+
+A properly operating harness should finish by reporting:
+
+- the service URL, normally `http://localhost:3001`;
+- whether `/api/health/ready` is ready;
+- the created agent ID;
+- a successful normal chat response;
+- a successful SSE `done` event;
+- any settings that still require your model key or frontend origin.
+
+The harness should keep `.env` local and must not commit credentials or test
+data. The same prompt can be used after moving the project to a new machine.
 
 ## Quick Start
 
 Requirements:
 
-- Docker with Docker Compose
-- An OpenAI-compatible API endpoint and API key
+- Docker and Docker Compose
+- An OpenAI-compatible endpoint and API key
 
-Create the local configuration:
+Create the configuration:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set at least:
+At minimum, replace:
 
 ```dotenv
-JWT_SECRET=<output of: openssl rand -hex 32>
+JWT_SECRET=<run: openssl rand -hex 32>
 DB_PASSWORD=<a strong local database password>
-PROVIDER_API_KEY=<your API key>
+PROVIDER_BASE_URL=https://your-model-endpoint/v1
+PROVIDER_API_KEY=<your model API key>
+DEFAULT_PROVIDER=your-provider
+DEFAULT_MODEL=your-model
 ```
 
-Start MySQL and the application:
+Set `ADMIN_INITIAL_PASSWORD` if you want a known bootstrap administrator
+password. If it is omitted, the service generates one and prints it once in the
+application log.
+
+Start the service:
 
 ```bash
-docker compose up --build
+docker compose up --build -d
+docker compose logs -f app
 ```
 
-Open:
+Service endpoints:
 
-- API documentation: <http://localhost:3001/api/docs>
-- Liveness: <http://localhost:3001/api/health>
-- Readiness: <http://localhost:3001/api/health/ready>
+- API base: `http://localhost:3001/api`
+- Swagger UI: `http://localhost:3001/api/docs`
+- Liveness: `http://localhost:3001/api/health`
+- Readiness: `http://localhost:3001/api/health/ready`
 
-On the first start, the service creates an `admin` account. Set
-`ADMIN_INITIAL_PASSWORD` before the first start, or read the generated password
-from the application log:
+Stop the service:
 
 ```bash
-docker compose logs app
+docker compose down
 ```
 
-Log in and call the API:
+Use `docker compose down -v` only when you intentionally want to delete the
+development MySQL data and agent workspace volume.
 
-```bash
-curl -X POST http://localhost:3001/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"<your-admin-password>"}'
+## Scenario Walkthrough
 
-curl http://localhost:3001/api/agents \
-  -H "Authorization: Bearer <token>"
-```
+Assume you want a support assistant for a web application.
 
-## Local Development
+1. The harness deploys Agent Service Kit and confirms `/api/health/ready`.
+2. A backend or frontend user logs in through `POST /api/auth/login`.
+3. The application creates a `support-assistant` agent with a system prompt.
+4. The browser sends messages to `POST /api/chat/:agentId/stream`.
+5. The UI appends `text_delta` events as they arrive.
+6. The UI stores the `sessionId` from the `done` event.
+7. Subsequent requests reuse that `sessionId`, so the assistant keeps context.
+8. Sessions and messages survive an application restart because they are stored
+   in MySQL.
 
-Requirements: Node.js 24+, MySQL 8+, and npm.
-
-```bash
-npm ci
-cp .env.example .env
-npm run dev
-```
-
-Useful commands:
-
-```bash
-npm run build       # compile TypeScript
-npm test            # run the Vitest suite
-npm run cli         # interactive agent CLI
-npm start           # run compiled JavaScript
-```
-
-The test suite uses a separate database named with `test` in it
-(`agent_service_kit_test` by default) and refuses to truncate other databases.
-Set `TEST_DB_NAME` to override the test database. Start MySQL first:
-
-```bash
-docker compose up -d mysql
-npm test
-```
-
-## Agent Workspaces
-
-An agent workspace has this shape:
+You can also place reusable domain knowledge in the agent workspace:
 
 ```text
-workplaces/demo-agent/
-  agent.md          # system instructions for this agent
-  skills/           # optional reusable skills
-    <skill>/
+workplaces/support-assistant/
+  agent.md
+  skills/
+    product-faq/
       SKILL.md
-  reference/        # optional private reference material
+  reference/
+    product-guide.md
 ```
 
-`agents.json` lists agents that are seeded into MySQL at startup. The included
-`demo-agent` is a safe, generic example. Add your own prompts, skills, and
-reference material locally; do not publish private business data or credentials.
+Keep private customer information and proprietary documents outside the public
+repository. Mount or copy them into the agent workspace in your deployment.
 
-Agents can also be created through `POST /api/agents`. New agents default to the
-read-only tools `read`, `grep`, `find`, and `ls`.
+## Create an Agent
+
+After login, create an agent with one API call:
+
+```bash
+curl -X POST http://localhost:3001/api/agents \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "support-assistant",
+    "description": "Answers product support questions",
+    "defaultProvider": "openai",
+    "defaultModel": "gpt-4o",
+    "systemPrompt": "Answer support questions accurately and concisely."
+  }'
+```
+
+The response includes the `id` used by the chat endpoints. New agents receive
+the read-only tools `read`, `grep`, `find`, and `ls` by default.
+
+## Frontend Integration
+
+### 1. Authentication
+
+Log in and store the returned JWT:
+
+```http
+POST /api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "<admin password>"
+}
+```
+
+Send it on protected requests:
+
+```http
+Authorization: Bearer <jwt>
+```
+
+### 2. Discover agents and models
+
+```http
+GET /api/agents
+GET /api/models
+```
+
+### 3. Send a normal message
+
+```http
+POST /api/chat/:agentId
+Content-Type: application/json
+
+{
+  "message": "How do I reset my password?",
+  "sessionId": "optional-existing-session",
+  "provider": "openai",
+  "model": "gpt-4o"
+}
+```
+
+The response contains `reply`, `sessionId`, and the selected model. Reuse
+`sessionId` for the next turn.
+
+### 4. Stream chat to the browser
+
+The stream endpoint uses `POST` and a Bearer token, so browser `EventSource`
+will not work. Use `fetch` and read the response stream:
+
+```js
+const response = await fetch(`${API_BASE}/api/chat/${agentId}/stream`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  },
+  body: JSON.stringify({ message, sessionId }),
+});
+
+if (!response.ok) throw new Error(`HTTP ${response.status}`);
+if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+  throw new Error("Expected an SSE response");
+}
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+let buffer = "";
+
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buffer += decoder.decode(value, { stream: true });
+
+  let boundary;
+  while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+    const frame = buffer.slice(0, boundary);
+    buffer = buffer.slice(boundary + 2);
+
+    const event = frame.match(/^event: (.+)$/m)?.[1];
+    const dataLine = frame.match(/^data: (.+)$/m)?.[1];
+    if (!event || !dataLine) continue;
+
+    const data = JSON.parse(dataLine);
+    if (event === "text_delta") appendToBubble(data.delta);
+    if (event === "done") saveSessionId(data.sessionId);
+    if (event === "error") showError(data.error);
+  }
+}
+```
+
+For the full event sequence, see [docs/stream-events.md](docs/stream-events.md).
+
+### 5. Configure browser CORS
+
+For local development, `CORS_ORIGIN=*` is allowed. In production, replace it
+with an exact allowlist:
+
+```dotenv
+CORS_ORIGIN=https://app.example.com,https://admin.example.com
+```
+
+### 6. Frontend error handling
+
+- `400`: invalid input, weak password, context limit, or unsafe message.
+- `401`: missing, invalid, or expired JWT.
+- `404`: unknown agent/session or a session owned by another user.
+- `409`: duplicate user or provider conflict.
+- `423`: login temporarily locked.
+- `503`: database unavailable or LLM request queue timeout.
+
+Check `response.ok` and the status before treating a response as JSON or SSE.
 
 ## Main API
-
-All routes except registration and login require `Authorization: Bearer <jwt>`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/auth/register` | Register a user |
-| `POST` | `/api/auth/login` | Obtain a 24-hour JWT |
+| `POST` | `/api/auth/login` | Obtain a JWT |
 | `GET/POST` | `/api/agents` | List or create agents |
-| `GET/PUT/DELETE` | `/api/agents/:id` | Read, update, or delete an agent |
+| `GET/PUT/DELETE` | `/api/agents/:id` | Manage one agent |
 | `GET/PUT` | `/api/agents/:id/workspace/agent.md` | Read or update instructions |
-| `POST` | `/api/chat/:agentId` | Send a message |
-| `POST` | `/api/chat/:agentId/stream` | Stream a reply with SSE |
-| `GET` | `/api/chat/sessions` | List the current user's sessions |
+| `POST` | `/api/chat/:agentId` | Normal message request |
+| `POST` | `/api/chat/:agentId/stream` | SSE stream |
+| `GET` | `/api/chat/sessions` | List current-user sessions |
 | `GET` | `/api/chat/:agentId/messages` | Read session messages |
 | `POST` | `/api/models/providers` | Register an OpenAI-compatible provider |
-| `GET` | `/api/models` | List configured models |
+| `GET` | `/api/models` | List available models |
 
-See [docs/api.md](docs/api.md) for request and response examples. See
-[docs/stream-events.md](docs/stream-events.md) for the SSE event contract.
-
-The stream endpoint uses `POST` with a Bearer token, so the browser
-`EventSource` API is not sufficient. Use `fetch` and read
-`response.body.getReader()`.
+Detailed request and response examples are in [docs/api.md](docs/api.md).
 
 ## Configuration
 
-The most important environment variables are:
+Core variables:
 
-| Variable | Required | Description |
-| --- | --- | --- |
-| `JWT_SECRET` | Production | JWT signing secret. Production startup fails if omitted. |
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | Yes | MySQL connection |
-| `PROVIDER_NAME` | No | Provider name; defaults to `openai` |
-| `PROVIDER_BASE_URL` | No | OpenAI-compatible base URL |
-| `PROVIDER_API_KEY` | Yes | Provider credential |
-| `DEFAULT_PROVIDER`, `DEFAULT_MODEL` | No | Agent defaults |
-| `ADMIN_INITIAL_PASSWORD` | No | Bootstrap password; otherwise generated once |
-| `MAX_CONCURRENT_LLM_CALLS` | No | Global LLM concurrency limit; default `2` |
-| `SESSION_IDLE_TTL_MS` | No | Idle session eviction time; default 30 minutes |
-| `SESSION_CACHE_CAPACITY` | No | Active in-memory session limit; default `20` |
-| `STREAM_TIMEOUT_MS` | No | Maximum SSE request duration; default 5 minutes |
+| Variable | Purpose |
+| --- | --- |
+| `JWT_SECRET` | Production JWT signing secret |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | MySQL persistence |
+| `PROVIDER_NAME`, `PROVIDER_BASE_URL`, `PROVIDER_API_KEY` | Default model provider |
+| `DEFAULT_PROVIDER`, `DEFAULT_MODEL` | Agent defaults |
+| `ADMIN_INITIAL_PASSWORD` | Optional known bootstrap password |
+| `CORS_ORIGIN` | Browser origin allowlist |
+| `MAX_CONCURRENT_LLM_CALLS` | Global LLM concurrency limit |
+| `SESSION_IDLE_TTL_MS` | In-memory session idle timeout |
+| `SESSION_CACHE_CAPACITY` | In-memory session limit |
+| `STREAM_TIMEOUT_MS` | Maximum SSE request duration |
 
-See [.env.example](.env.example) for the full list.
+See [.env.example](.env.example) for all options.
 
-Provider precedence is: request/agent selection, then provider configuration in
-MySQL, then the `PROVIDER_*` fallback from the environment. Database credentials
-and other secrets are never included in the image.
+Docker build options:
 
-## Security Notes
+- `NODE_IMAGE`: override the Node base image, usually not needed.
+- `NPM_REGISTRY`: override the npm registry for restricted networks.
+- `MYSQL_IMAGE`: override the bundled MySQL image for restricted networks.
+- `INSTALL_PYTHON_RUNTIME=true`: install Python and workspace Python
+  dependencies. Disabled by default to keep the quick-start image small.
 
-- Use a unique, high-entropy `JWT_SECRET`.
-- Put secrets in `.env`, a secret manager, or container runtime environment variables.
-- Do not commit `.env`, model keys, customer data, raw Q&A exports, or private knowledge bases.
-- New agents use read-only tools by default. Add shell access only for trusted agents.
-- Login throttling is stored in process memory. Multi-instance deployments should
-  replace it with a shared rate limiter such as Redis.
-- The built-in chat filter is defense in depth, not a sandbox. Run untrusted agents
-  in a separately isolated container or VM.
+If a provider runs on the host machine, use `host.docker.internal` from inside
+the container instead of `localhost`.
 
-Report vulnerabilities according to [SECURITY.md](SECURITY.md).
+## Maintainer Smoke Test
 
-## Limitations
+Before claiming a deployment is usable, verify:
 
-- Multi-agent routing and long-term vector memory are not implemented.
-- The in-process login limiter is not shared across replicas.
-- Financial or other regulated deployments must add their own data-retention,
-  audit, access-control, and compliance controls.
+1. `docker compose up --build -d`
+2. `/api/health` returns `ok`
+3. `/api/health/ready` returns ready with `db.reachable=true`
+4. Admin login succeeds
+5. Agent creation succeeds
+6. `/api/chat/:agentId` returns a model reply
+7. `/api/chat/:agentId/stream` emits `text_delta` and `done`
+8. Sessions remain visible after `docker compose restart app`
+9. `npm run build`
+10. `npm test`
+
+## Security and Deployment Boundaries
+
+- Never commit `.env`, provider keys, customer data, or private knowledge bases.
+- Set a strong `JWT_SECRET`, database password, and administrator password.
+- Restrict `CORS_ORIGIN` in production.
+- Keep shell tools disabled for untrusted agents. The built-in message filter is
+  not a sandbox.
+- The bundled login limiter is process-local; use shared rate limiting for
+  multi-replica deployments.
+- Multi-agent routing and long-term vector memory are not included.
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Contributing
 
